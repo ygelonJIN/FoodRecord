@@ -349,6 +349,28 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
 .legend span{display:inline-flex;align-items:center;gap:5px}
 .legend i{width:8px;height:8px;border-radius:50%;display:inline-block}
 
+/* ---------- 配置 ---------- */
+.cfgrow{display:flex;align-items:center;gap:10px;padding:12px 16px;position:relative;width:100%;text-align:left}
+.cfgrow + .cfgrow::before{content:"";position:absolute;top:0;left:16px;right:0;height:.5px;background:var(--sep-soft)}
+.cfgrow:active{background:var(--fill)}
+.cfgrow .ln{flex:1;min-width:0}
+.cfgrow .n1{font-size:16px;display:flex;align-items:center;gap:6px}
+.cfgrow.on .n1{font-weight:600}
+.cfgrow .now{font-size:11px;font-weight:600;color:var(--blue);background:color-mix(in srgb,var(--blue) 12%,transparent);padding:1px 7px;border-radius:5px;flex:none}
+.cfgrow .n2{font-size:12px;color:var(--label2);margin-top:2px;font-variant-numeric:tabular-nums}
+
+/* ---------- 食物库长按拖动排序 ---------- */
+.librow{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.librow.pressing{background:var(--fill)}
+.librow.ph{opacity:0}
+.librow.ph::before{display:none}
+.librow.ghost{
+  position:fixed;z-index:90;margin:0;background:var(--card);border-radius:12px;
+  box-shadow:0 10px 28px rgba(0,0,0,.18),0 0 0 .5px var(--sep-soft);
+  opacity:.97;pointer-events:none;transform:translateY(0);
+}
+body.dragging{-webkit-user-select:none;user-select:none}
+
 /* ---------- sheet ---------- */
 .mask{
   position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:40;
@@ -464,6 +486,7 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
       <input type="search" id="libSearch" placeholder="搜索食物" autocomplete="off">
     </div>
     <div class="card" id="libList"></div>
+    <div class="footnote">长按食物约 0.3 秒就能上下拖动，顺序会自动保存；点一下仍然是编辑。搜索时不能拖。</div>
   </main>
 
   <!-- ================= STATS ================= -->
@@ -477,7 +500,7 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
       <div id="dayList"></div>
     </div>
     <div class="footnote" style="padding:2px 20px 10px;text-align:center">
-      平均按天计算，只统计有记录的日子，没记的那天不拉低均值。
+      平均按天计算，只统计有记录的日子，没记的那天不拉低均值。今天还没过完，不计入平均。
     </div>
     <div class="footnote" id="statEmpty" style="display:none;text-align:center;padding:24px 20px">
       还没有任何记录。先在「今日」里加点吃的。
@@ -486,6 +509,18 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
 
   <!-- ================= SETTINGS ================= -->
   <main id="v-settings" class="view">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">配置</span>
+        <span class="card-sub" id="cfgCount">—</span>
+      </div>
+      <div id="cfgList"></div>
+      <button class="btn" data-action="newConfig">新建配置</button>
+      <button class="btn" data-action="renameConfig">重命名当前配置</button>
+      <button class="btn danger" data-action="deleteConfig">删除当前配置</button>
+      <div class="footnote">每个配置有自己的食物库、记录和每日目标，互不影响。点名字就切过去。</div>
+    </div>
+
     <div class="card">
       <div class="card-head"><span class="card-title">每日目标</span></div>
       <div class="frow">
@@ -518,9 +553,10 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
 
     <div class="card">
       <div class="card-head"><span class="card-title">数据</span></div>
-      <button class="btn" data-action="exportData">导出备份（JSON）</button>
+      <button class="btn" data-action="exportData">导出全部配置（JSON）</button>
       <button class="btn" data-action="importData">导入备份</button>
-      <button class="btn danger" data-action="clearAll">清空所有记录</button>
+      <button class="btn" id="legacyBackupBtn" data-action="legacyBackup" style="display:none">下载迁移前的旧数据备份</button>
+      <button class="btn danger" data-action="clearAll">清空当前配置的数据</button>
       <div class="footnote">数据存在本机浏览器 localStorage 里，换设备或清理浏览器数据会丢，建议定期导出备份。</div>
     </div>
 
@@ -539,7 +575,7 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
       <div class="footnote">对混合膳食误差一般在 5% 以内；高纤维、坚果、含酒精的食物偏差更大。要精确到包装标注值，在食物里直接填热量即可。</div>
     </div>
 
-    <div style="text-align:center;color:var(--label3);font-size:12px;padding:6px 0 10px">饮食记录 · 本地版 v1</div>
+    <div style="text-align:center;color:var(--label3);font-size:12px;padding:6px 0 10px">饮食记录 · 本地版 v2</div>
   </main>
 
   <nav class="tabbar">
@@ -566,7 +602,10 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
    数据层 / 计算层 / 渲染层
    ============================================================ */
 
+/* v1 是旧版单配置结构，只读，仅用于一次性迁移；新数据一律写 v2 */
 const LS_KEY = 'foodrecord.v1';
+const LS_KEY_V2 = 'foodrecord.v2';
+const DEFAULT_CONFIG_NAME = 'jfq';
 
 const MEALS = [
   { id: 'breakfast', name: '早餐' },
@@ -620,7 +659,15 @@ function toast(msg) {
 }
 
 /* ---------------- storage ---------------- */
-let state = loadState();
+
+/* 数据形状（v2）：
+   { v:2, active:<配置id>, legacyBackupSaved?:true,
+     configs:[ { id, name, profile:{weight,carbX,proX,fatX,sugarX}, foods:[…], logs:{…} } ] }
+   每个配置自带一份食物库、每日目标和记录。state 就是当前配置那个对象本身（同一个引用），
+   所以下面所有直接改 state.xxx 的代码不需要额外同步。 */
+let legacyRaw = null;      // 迁移前那份 v1 原始 JSON，用来生成一次性备份文件
+let store = null;          // 全部配置
+let state = null;          // 当前配置，形状和旧版 state 完全一致
 let activeDate = todayKey();
 let saveTimer = null;
 
@@ -628,17 +675,6 @@ function emptyLog() {
   const o = {};
   MEALS.forEach(m => o[m.id] = []);
   return o;
-}
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (raw) {
-      const s = JSON.parse(raw);
-      if (s && s.profile && Array.isArray(s.foods)) return normalize(s);
-    }
-  } catch (e) { console.warn('读取本地数据失败，使用默认数据', e); }
-  return seedState();
 }
 
 function normalize(s) {
@@ -661,19 +697,101 @@ function normalize(s) {
   return s;
 }
 
-function seedState() {
-  return {
-    v: 1,
-    profile: Object.assign({}, DEFAULT_PROFILE),
-    foods: DEFAULT_FOODS.map(f => ({ id: uid('f'), ...f })),
-    logs: {},
-  };
+/* ---------- 配置层 ---------- */
+function normalizeConfig(c) {
+  c = c || {};
+  return normalize({
+    id: c.id || uid('cfg'),
+    name: String(c.name || '').trim() || DEFAULT_CONFIG_NAME,
+    profile: c.profile || {},
+    foods: c.foods || [],
+    logs: c.logs || {},
+  });
+}
+
+function seedFoods() { return DEFAULT_FOODS.map(f => ({ id: uid('f'), ...f })); }
+
+/* 新配置默认空库，用的人自己往里加 */
+function emptyConfig(name) {
+  return normalizeConfig({ id: uid('cfg'), name, profile: {}, foods: [], logs: {} });
+}
+
+function seedConfig(name) {
+  const c = emptyConfig(name);
+  c.foods = seedFoods();
+  return c;
+}
+
+/* 先读 v2；没有就迁 v1（迁进一个叫 jfq 的配置）；都没有才是全新一份。 */
+function loadStore() {
+  let rawV2 = null;
+  try {
+    rawV2 = localStorage.getItem(LS_KEY_V2);
+    if (rawV2) {
+      const o = JSON.parse(rawV2);
+      if (o && Array.isArray(o.configs) && o.configs.length) {
+        const configs = o.configs.map(normalizeConfig);
+        const active = configs.some(c => c.id === o.active) ? o.active : configs[0].id;
+        const st = { v: 2, active, configs, legacyBackupSaved: !!o.legacyBackupSaved };
+        /* 新结构已经确认读得出来，旧键才清掉 */
+        if (st.legacyBackupSaved) dropLegacyKey();
+        return st;
+      }
+      stashBroken(rawV2);
+    }
+  } catch (e) {
+    console.warn('读取本地数据失败', e);
+    stashBroken(rawV2);
+  }
+
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s && s.profile && Array.isArray(s.foods)) {
+        const c = normalizeConfig(Object.assign({}, s, { id: uid('cfg'), name: DEFAULT_CONFIG_NAME }));
+        legacyRaw = raw;
+        return { v: 2, active: c.id, configs: [c], legacyBackupSaved: false };
+      }
+    }
+  } catch (e) { console.warn('迁移旧数据失败', e); }
+
+  const c = seedConfig(DEFAULT_CONFIG_NAME);
+  return { v: 2, active: c.id, configs: [c], legacyBackupSaved: false };
+}
+
+function dropLegacyKey() {
+  try { localStorage.removeItem(LS_KEY); } catch (e) {}
+}
+
+/* v2 读不出来时先把原文留一份，别直接拿空数据盖掉 */
+function stashBroken(raw) {
+  if (!raw) return;
+  try { localStorage.setItem(LS_KEY_V2 + '.broken', raw); } catch (e) {}
+  console.warn('v2 数据读不出来，原文已存到 ' + LS_KEY_V2 + '.broken');
+}
+
+store = loadStore();
+state = store.configs.find(c => c.id === store.active) || store.configs[0];
+
+function configById(id) { return store.configs.find(c => c.id === id); }
+
+function storePayload() {
+  const o = { v: 2, active: store.active, configs: store.configs };
+  if (store.legacyBackupSaved) o.legacyBackupSaved = true;
+  return o;
+}
+
+function saveNow() {
+  clearTimeout(saveTimer);
+  try { localStorage.setItem(LS_KEY_V2, JSON.stringify(storePayload())); }
+  catch (e) { console.warn('保存失败', e); toast('保存失败，存储空间可能已满'); }
 }
 
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+    try { localStorage.setItem(LS_KEY_V2, JSON.stringify(storePayload())); }
     catch (e) { console.warn('保存失败', e); toast('保存失败，存储空间可能已满'); }
   }, 60);
 }
@@ -713,8 +831,8 @@ function getDay(key, create) {
   return log;
 }
 
-function dayTotals(key) {
-  const log = state.logs[key];
+function dayTotalsIn(cfg, key) {
+  const log = cfg && cfg.logs ? cfg.logs[key] : null;
   if (!log) return { p: 0, c: 0, f: 0, s: 0, kcal: 0 };
   let t = { p: 0, c: 0, f: 0, s: 0, kcal: 0 };
   MEALS.forEach(m => {
@@ -722,6 +840,15 @@ function dayTotals(key) {
     t.p += s.p; t.c += s.c; t.f += s.f; t.s += s.s; t.kcal += s.kcal;
   });
   return t;
+}
+
+function dayTotals(key) { return dayTotalsIn(state, key); }
+
+function recordedDays(cfg) {
+  return Object.keys((cfg && cfg.logs) || {}).filter(k => {
+    const t = dayTotalsIn(cfg, k);
+    return t.p + t.c + t.f + t.s > 0;
+  }).length;
 }
 
 function targets() {
@@ -839,6 +966,130 @@ function renderLibrary() {
     : `<div class="empty">${q ? '没有匹配的食物' : '食物库是空的'}</div>`;
 }
 
+/* ---------------- render: library 拖动排序 ---------------- */
+
+/* 长按 0.3 秒进入拖动，单击仍然是编辑。
+   拖动时把原行留成隐形占位（.ph），另外浮一个 fixed 的克隆跟着手指走，
+   每次移动只做 insertBefore，松手后按 DOM 顺序回写 state.foods。 */
+const LONG_PRESS_MS = 320;
+let libPressTimer = null;
+let libDrag = null;            // { row, ghost, pointerId, startY, moved, blockScroll }
+let libClickGuard = 0;         // 拖动结束后短时间内屏蔽 click，避免顺手打开编辑
+
+function libRows() { return Array.from(document.querySelectorAll('#libList .librow')); }
+
+function onLibPointerDown(e) {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  if (libDrag) return;
+  const row = e.target.closest('#libList .librow');
+  if (!row) return;
+  if (($('#libSearch').value || '').trim()) return;   // 搜索过滤后顺序没有意义
+
+  const startX = e.clientX, startY = e.clientY;
+  const pointerId = e.pointerId;
+
+  const off = () => {
+    clearTimeout(libPressTimer); libPressTimer = null;
+    row.classList.remove('pressing');
+    document.removeEventListener('pointermove', earlyMove);
+    document.removeEventListener('pointerup', off);
+    document.removeEventListener('pointercancel', off);
+  };
+  const earlyMove = ev => {
+    if (Math.abs(ev.clientX - startX) > 8 || Math.abs(ev.clientY - startY) > 8) off();
+  };
+
+  document.addEventListener('pointermove', earlyMove, { passive: true });
+  document.addEventListener('pointerup', off);
+  document.addEventListener('pointercancel', off);
+  row.classList.add('pressing');
+
+  libPressTimer = setTimeout(() => {
+    off();
+    startLibDrag(row, { clientY: startY, pointerId });
+  }, LONG_PRESS_MS);
+}
+
+function startLibDrag(row, ev) {
+  const rect = row.getBoundingClientRect();
+  const ghost = row.cloneNode(true);
+  ghost.classList.add('ghost');
+  ghost.classList.remove('pressing');
+  ghost.style.top = rect.top + 'px';
+  ghost.style.left = rect.left + 'px';
+  ghost.style.width = rect.width + 'px';
+
+  document.body.appendChild(ghost);
+  row.classList.add('ph');
+
+  /* iOS Safari 靠 touchmove 才能拦住滚动，桌面靠 pointermove 的 preventDefault */
+  const blockScroll = e => { e.preventDefault(); };
+  document.addEventListener('touchmove', blockScroll, { passive: false });
+
+  libDrag = {
+    row, ghost, pointerId: ev.pointerId, startY: ev.clientY,
+    moved: false, blockScroll,
+  };
+  try { row.setPointerCapture(ev.pointerId); } catch (err) {}
+  row.addEventListener('pointermove', onLibDragMove);
+  row.addEventListener('pointerup', endLibDrag);
+  row.addEventListener('pointercancel', endLibDrag);
+  document.body.classList.add('dragging');
+  toast('上下拖动，松手保存顺序');
+}
+
+function onLibDragMove(e) {
+  if (!libDrag) return;
+  e.preventDefault();
+  const dy = e.clientY - libDrag.startY;
+  if (Math.abs(dy) > 2) libDrag.moved = true;
+  libDrag.ghost.style.transform = 'translateY(' + dy + 'px)';
+
+  const container = $('#libList');
+  if (!container) return;
+  let target = null;
+  for (const r of libRows()) {
+    if (r === libDrag.row) continue;
+    const rr = r.getBoundingClientRect();
+    if (e.clientY < rr.top + rr.height / 2) { target = r; break; }
+  }
+  if (target) {
+    if (target !== libDrag.row.nextElementSibling) container.insertBefore(libDrag.row, target);
+  } else if (libDrag.row !== container.lastElementChild) {
+    container.appendChild(libDrag.row);
+  }
+}
+
+function endLibDrag() {
+  if (!libDrag) return;
+  const { row, ghost, moved, blockScroll, pointerId } = libDrag;
+  row.removeEventListener('pointermove', onLibDragMove);
+  row.removeEventListener('pointerup', endLibDrag);
+  row.removeEventListener('pointercancel', endLibDrag);
+  try { row.releasePointerCapture(pointerId); } catch (err) {}
+  document.removeEventListener('touchmove', blockScroll);
+  ghost.remove();
+  row.classList.remove('ph');
+  document.body.classList.remove('dragging');
+  libDrag = null;
+  libClickGuard = Date.now() + 400;
+  if (moved) {
+    commitLibOrder();
+    toast('已保存顺序');
+  }
+}
+
+function commitLibOrder() {
+  const ids = libRows().map(r => r.dataset.id);
+  const byId = new Map(state.foods.map(f => [f.id, f]));
+  const ordered = ids.map(id => byId.get(id)).filter(Boolean);
+  /* 搜索/其它情况没在 DOM 里出现的食物，保持原来的相对顺序接在后面 */
+  state.foods.forEach(f => { if (!ids.includes(f.id)) ordered.push(f); });
+  state.foods = ordered;
+  save();
+  renderLibrary();
+}
+
 /* ---------------- render: stats ---------------- */
 function eachDate(from, to, fn) {
   const d = parseKey(from);
@@ -884,10 +1135,11 @@ function renderStats() {
     d.setDate(today.getDate() - n);
     return keyOf(d);
   };
+  /* 今天还没过完，一律不算进平均：区间取到昨天为止 */
   const periods = [
-    { name: '近 7 天', from: daysAgo(6), to: keyOf(today) },
-    { name: '近 30 天', from: daysAgo(29), to: keyOf(today) },
-    { name: '近 365 天', from: daysAgo(364), to: keyOf(today) },
+    { name: '近 7 天',   from: daysAgo(7),   to: daysAgo(1) },
+    { name: '近 30 天',  from: daysAgo(30),  to: daysAgo(1) },
+    { name: '近 365 天', from: daysAgo(365), to: daysAgo(1) },
   ];
   const T = targets();
   const tKcal = targetKcal();
@@ -975,7 +1227,30 @@ function renderDayList() {
 }
 
 /* ---------------- render: settings ---------------- */
-function renderSettings(force) {
+function renderConfigs() {
+  const el = $('#cfgList');
+  if (!el) return;
+  $('#cfgCount').textContent = store.configs.length + ' 个';
+  el.innerHTML = store.configs.map(c => {
+    const on = c.id === store.active;
+    return `<div class="cfgrow${on ? ' on' : ''}" data-action="switchConfig" data-id="${c.id}">
+      <div class="ln">
+        <div class="n1">${esc(c.name)}${on ? '<span class="now">当前</span>' : ''}</div>
+        <div class="n2">${(c.foods || []).length} 个食物 · ${recordedDays(c)} 天有记录</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const legacyBtn = $('#legacyBackupBtn');
+  if (legacyBtn) legacyBtn.style.display = hasLegacyData() ? '' : 'none';
+}
+
+function hasLegacyData() {
+  try { return !!localStorage.getItem(LS_KEY); } catch (e) { return false; }
+}
+
+function renderSettings(force, light) {
+  if (!light) renderConfigs();
   const p = state.profile;
   if (force) {
     $('#inWeight').value = p.weight;
@@ -1199,8 +1474,28 @@ function sheetFoodForm(foodId) {
       <div class="frow"><label>糖</label><input id="fS" type="number" inputmode="decimal" step="0.1" min="0" value="${f ? fnum(f.s) : ''}"><span class="unitlbl">g</span></div>
       <div class="frow"><label>热量 <span class="sub">可选</span></label><input id="fK" type="number" inputmode="decimal" step="1" min="0" placeholder="留空" value="${f && f.kcal != null ? fnum(f.kcal) : ''}"><span class="unitlbl">kcal</span></div>
     </div>
-    <div class="footnote" style="margin-top:-6px">填每 1 个单位的营养值，记录时按份数自动相乘。糖属于碳水的一部分，只用于单独统计，不重复计热量。<br>热量留空就按 蛋白×4 ＋ 碳水×4 ＋ 脂肪×9 换算；包装上有标好的热量，直接填这一格更准。</div>
+    <div class="footnote" style="margin-top:-6px">填每 1 个单位的营养值，记录时按份数自动相乘。糖属于碳水的一部分，只用于单独统计，不重复计热量。<br>热量留空就按 蛋白×4 ＋ 碳水×4 ＋ 脂肪×9 换算；包装上有标好的热量，直接填这一格更准。${f ? '<br>改这里的数字或名字，已经记录过的会一起改成新值，份数不变。' : ''}</div>
     ${f ? `<div style="padding:4px 16px 8px"><button class="btn danger" style="width:100%;background:var(--card);border-radius:12px;text-align:center" data-sheet="deleteFood">删除这个食物</button></div>` : ''}`);
+}
+
+/* 食物改了名称/单位/营养/热量之后，把所有已经引用它的历史条目改写成新值。
+   这些条目本来就是它的快照，份数保持不动，只换内容。 */
+function syncFoodToLogs(food) {
+  let n = 0;
+  Object.keys(state.logs).forEach(k => {
+    const log = state.logs[k] || {};
+    MEALS.forEach(m => {
+      (log[m.id] || []).forEach(e => {
+        if (e.foodId !== food.id) return;
+        e.name = food.name;
+        e.unit = food.unit;
+        e.p = food.p; e.c = food.c; e.f = food.f; e.s = food.s;
+        e.kcal = food.kcal;
+        n++;
+      });
+    });
+  });
+  return n;
 }
 
 function saveFoodForm() {
@@ -1214,10 +1509,14 @@ function saveFoodForm() {
     f: num($('#fF').value), s: num($('#fS').value),
     kcal: kcalRaw === '' ? null : num(kcalRaw),
   };
+  let synced = 0;
   if (sheetState.foodId) {
     const f = state.foods.find(x => x.id === sheetState.foodId);
-    if (f) Object.assign(f, data);
-    toast('已保存');
+    if (f) {
+      Object.assign(f, data);
+      synced = syncFoodToLogs(f);
+    }
+    toast(synced ? '已保存 · 同步了 ' + synced + ' 条记录' : '已保存');
   } else {
     state.foods.push(Object.assign({ id: uid('f') }, data));
     toast('已添加到食物库');
@@ -1225,6 +1524,7 @@ function saveFoodForm() {
   save();
   renderLibrary();
   renderToday();
+  if (synced) renderStats();
   closeSheet();
 }
 
@@ -1242,19 +1542,109 @@ function deleteFood() {
 }
 
 /* ============================================================
+   配置：切换 / 新建 / 重命名 / 删除
+   ============================================================ */
+function enterConfig(c) {
+  store.active = c.id;
+  state = c;
+  activeDate = todayKey();
+  dayListLimit = 30;
+  save();
+  renderAll();
+  renderSettings(true);
+  const dp = $('#datePicker');
+  if (dp) dp.value = activeDate;
+}
+
+function switchConfig(id) {
+  if (id === store.active) return;
+  const c = configById(id);
+  if (!c) return;
+  enterConfig(c);
+  toast('已切到「' + c.name + '」');
+}
+
+function uniqueName(name) { return !store.configs.some(c => c.name === name); }
+
+function addConfig() {
+  const name = (prompt('新配置的名字（比如人名）', '') || '').trim();
+  if (!name) return;
+  if (!uniqueName(name)) { toast('已经有同名配置'); return; }
+  const c = emptyConfig(name);
+  store.configs.push(c);
+  enterConfig(c);
+  toast('已新建「' + name + '」，食物库是空的');
+}
+
+function renameConfig() {
+  const cur = state;
+  const name = (prompt('配置名字', cur.name) || '').trim();
+  if (!name || name === cur.name) return;
+  if (!uniqueName(name)) { toast('已经有同名配置'); return; }
+  cur.name = name;
+  save();
+  renderAll();
+  renderSettings(true);
+  toast('已改名为「' + name + '」');
+}
+
+function deleteConfig() {
+  if (store.configs.length <= 1) { toast('至少要留一个配置'); return; }
+  const cur = state;
+  if (!confirm('删除配置「' + cur.name + '」？\n它的食物库和所有记录会一起删掉，不能撤销。')) return;
+  store.configs = store.configs.filter(c => c.id !== cur.id);
+  enterConfig(store.configs[0]);
+  toast('已删除「' + cur.name + '」');
+}
+
+/* ============================================================
    导入 / 导出
    ============================================================ */
-function exportData() {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+function downloadJSON(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'foodrecord-backup-' + todayKey() + '.json';
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
-  toast('已导出备份');
+}
+
+function exportData() {
+  downloadJSON({
+    app: 'foodrecord', v: 2, exportedAt: new Date().toISOString(),
+    active: store.active, configs: store.configs,
+  }, 'foodrecord-backup-' + todayKey() + '.json');
+  toast('已导出全部配置');
+}
+
+/* 迁移前那份旧数据单独存一个最小文件：就是原来的 v1 JSON，不带外壳，
+   以后用「导入备份」直接就能读回来。 */
+function downloadLegacyBackup() {
+  let raw = legacyRaw;
+  if (!raw) { try { raw = localStorage.getItem(LS_KEY); } catch (e) {} }
+  let obj = null;
+  if (raw) { try { obj = JSON.parse(raw); } catch (e) {} }
+  if (!obj) { toast('没有可备份的旧数据'); return; }
+  downloadJSON(obj, 'foodrecord-legacy-' + todayKey() + '.json');
+  store.legacyBackupSaved = true;
+  legacyRaw = null;
+  saveNow();
+  dropLegacyKey();
+  renderSettings(false);
+  toast('旧数据备份已存到「下载」');
+}
+
+/* 选择不备份：旧格式那一份直接清掉，浏览器里不留两套 */
+function dismissLegacyBackup() {
+  store.legacyBackupSaved = true;
+  legacyRaw = null;
+  saveNow();
+  dropLegacyKey();
+  closeSheet();
+  renderSettings(false);
 }
 
 function importData() { $('#importFile').click(); }
@@ -1264,27 +1654,52 @@ function onImportFile(e) {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
-    try {
-      const obj = JSON.parse(reader.result);
-      if (!obj || !obj.profile || !Array.isArray(obj.foods)) throw new Error('格式不对');
-      if (!confirm('导入将覆盖当前全部数据，继续？')) return;
-      state = normalize(obj);
-      save();
-      renderAll();
-      renderSettings(true);
-      renderToday();
-      toast('导入成功');
-    } catch (err) {
-      toast('导入失败：文件格式不对');
-    }
+    let obj = null;
+    try { obj = JSON.parse(reader.result); } catch (err) { obj = null; }
+    if (!obj) { toast('导入失败：文件格式不对'); return; }
+    applyImport(obj);
   };
   reader.readAsText(file);
   e.target.value = '';
 }
 
+/* 真正落数据的那一步单独拎出来：确认、分支、重绘都在这。
+   两种都认——带 configs 的完整备份，和旧版 {profile,foods,logs}。 */
+function applyImport(obj) {
+  try {
+    if (obj && Array.isArray(obj.configs) && obj.configs.length) {
+      if (!confirm('这是完整备份，导入会覆盖当前全部 ' + store.configs.length + ' 个配置，继续？')) return false;
+      const configs = obj.configs.map(normalizeConfig);
+      const target = configs.find(c => c.id === obj.active) || configs[0];
+      store.configs = configs;
+      enterConfig(target);
+      saveNow();
+      toast('导入成功');
+      return true;
+    }
+    if (obj && obj.profile && Array.isArray(obj.foods)) {
+      if (!confirm('这是旧格式备份。导入会覆盖当前配置「' + state.name + '」的食物库、记录和目标，其它配置不动。继续？')) return false;
+      const c = normalizeConfig(Object.assign({}, obj, { id: state.id, name: state.name }));
+      const i = store.configs.findIndex(x => x.id === c.id);
+      if (i >= 0) store.configs[i] = c; else store.configs.push(c);
+      enterConfig(c);
+      saveNow();
+      toast('导入成功');
+      return true;
+    }
+  } catch (err) {
+    console.error('导入失败', err);
+  }
+  toast('导入失败：文件格式不对');
+  return false;
+}
+
+/* 只清当前这一个配置，回到初始状态：预置食物 + 默认目标，记录清空 */
 function clearAll() {
-  if (!confirm('清空所有记录和自定义食物？此操作不可撤销。')) return;
-  state = seedState();
+  if (!confirm('清空配置「' + state.name + '」的食物库和所有记录，恢复成初始的预置食物和默认目标？\n其它配置不受影响，此操作不可撤销。')) return;
+  state.foods = seedFoods();
+  state.logs = {};
+  state.profile = Object.assign({}, DEFAULT_PROFILE);
   save();
   renderAll();
   renderSettings(true);
@@ -1321,6 +1736,11 @@ function handleAction(a, el) {
       break;
     case 'openFood': sheetFoodForm(el.dataset.id); break;
     case 'newFood': sheetFoodForm(null); break;
+    case 'switchConfig': switchConfig(el.dataset.id); break;
+    case 'newConfig': addConfig(); break;
+    case 'renameConfig': renameConfig(); break;
+    case 'deleteConfig': deleteConfig(); break;
+    case 'legacyBackup': downloadLegacyBackup(); break;
     case 'exportData': exportData(); break;
     case 'importData': importData(); break;
     case 'clearAll': clearAll(); break;
@@ -1336,12 +1756,15 @@ function handleSheetAction(a) {
     case 'newFoodFromPick': sheetFoodForm(null); break;
     case 'saveFood': saveFoodForm(); break;
     case 'deleteFood': deleteFood(); break;
+    case 'saveLegacyBackup': downloadLegacyBackup(); closeSheet(); break;
+    case 'skipLegacyBackup': dismissLegacyBackup(); break;
   }
 }
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-action],[data-tab],[data-sheet],[data-qty],[data-pick]');
   if (!el) return;
+  if (el.dataset.action === 'openFood' && Date.now() < libClickGuard) return;
   if (el.dataset.tab) { switchTab(el.dataset.tab); return; }
   if (el.dataset.sheet) { handleSheetAction(el.dataset.sheet); return; }
   if (el.dataset.qty) {
@@ -1354,6 +1777,9 @@ document.addEventListener('click', e => {
 });
 
 $('#mask').addEventListener('click', closeSheet);
+
+/* 食物库长按拖动：统一在 document 上接 pointerdown，行是动态渲染的 */
+document.addEventListener('pointerdown', onLibPointerDown, { passive: true });
 
 document.addEventListener('input', e => {
   const id = e.target.id;
@@ -1384,7 +1810,7 @@ function syncProfile() {
   p.fatX = num($('#inFatX').value);
   p.sugarX = num($('#inSugarX').value);
   save();
-  renderSettings(false);
+  renderSettings(false, true);   // 只是改目标值，不用重建配置列表
   renderToday();
 }
 
@@ -1396,14 +1822,31 @@ if (window.visualViewport) {
   });
 }
 
+/* 迁移完成后的提示：让他把旧格式的数据存成文件，然后浏览器里就不再留两份 */
+function offerLegacyBackup() {
+  openSheet(`
+    <div class="sheet-head">
+      <button class="act" data-sheet="skipLegacyBackup">先不用</button>
+      <span style="font-size:17px;font-weight:600">数据已升级</span>
+      <span class="act" style="width:52px;visibility:hidden">占位</span>
+    </div>
+    <div class="sheet-title">记录都归到「${esc(state.name)}」了</div>
+    <div class="sheet-note">原来的食物库、每日目标和所有记录一条没动，只是换了个存法。旧格式的那一份我建议先存成一个文件，需要时用设置页的「导入备份」就能找回。</div>
+    <div style="padding:6px 16px 12px">
+      <button class="cancelbtn" style="margin:0;width:100%" data-sheet="saveLegacyBackup">存一份旧数据备份</button>
+    </div>
+    <div class="footnote" style="padding:0 16px 18px">存完浏览器里就不再保留旧格式那一份，不会占两份空间。选「先不用」会直接清掉旧副本，之后就没有这份旧备份了；点右上角或空白处关掉则先留着，设置页里还能补存。</div>`);
+}
+
 /* ---------------- init ---------------- */
 (function init() {
   activeDate = todayKey();
   $('#datePicker').value = activeDate;
-  save();               // 首次运行也落盘，保证食物 ID 稳定
+  saveNow();            // 首次运行就落盘：食物 ID 稳定，迁移出来的 v2 也立刻存在
   renderAll();
   renderSettings(true);
   switchTab('today');
+  if (legacyRaw) offerLegacyBackup();
 })();
 </script>
 </body>
