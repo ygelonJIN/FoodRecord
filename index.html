@@ -359,9 +359,20 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
 .cfgrow .now{font-size:11px;font-weight:600;color:var(--blue);background:color-mix(in srgb,var(--blue) 12%,transparent);padding:1px 7px;border-radius:5px;flex:none}
 .cfgrow .n2{font-size:12px;color:var(--label2);margin-top:2px;font-variant-numeric:tabular-nums}
 
-/* ---------- 食物库长按拖动排序 ---------- */
+/* ---------- 食物库拖动排序 ---------- */
 .librow{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .librow.pressing{background:var(--fill)}
+/* 最左侧这条是拖动区：只占原有左边距，不改变文字位置；灰条就是能抓的地方 */
+.librow .grip{
+  position:absolute;left:0;top:0;bottom:0;width:32px;
+  touch-action:none;cursor:grab;
+}
+.librow .grip::after{
+  content:"";position:absolute;left:6px;top:50%;width:4px;height:20px;
+  transform:translateY(-50%);border-radius:2px;background:var(--label3);
+  transition:background .15s ease,height .15s ease;
+}
+.librow.pressing .grip::after{background:var(--label2);height:26px}
 .librow.ph{opacity:0}
 .librow.ph::before{display:none}
 .librow.ghost{
@@ -369,7 +380,7 @@ main{flex:1;padding:8px 16px calc(96px + env(safe-area-inset-bottom));}
   box-shadow:0 10px 28px rgba(0,0,0,.18),0 0 0 .5px var(--sep-soft);
   opacity:.97;pointer-events:none;transform:translateY(0);
 }
-body.dragging{-webkit-user-select:none;user-select:none}
+body.dragging{-webkit-user-select:none;user-select:none;cursor:grabbing}
 
 /* ---------- sheet ---------- */
 .mask{
@@ -486,7 +497,7 @@ body.dragging{-webkit-user-select:none;user-select:none}
       <input type="search" id="libSearch" placeholder="搜索食物" autocomplete="off">
     </div>
     <div class="card" id="libList"></div>
-    <div class="footnote">长按食物约 0.3 秒就能上下拖动，顺序会自动保存；点一下仍然是编辑。搜索时不能拖。</div>
+    <div class="footnote">按住每行最左边的灰条就能直接上下拖动，顺序会自动保存；点一下仍然是编辑。搜索时不能拖。</div>
   </main>
 
   <!-- ================= STATS ================= -->
@@ -952,6 +963,7 @@ function renderLibrary() {
   const list = state.foods.filter(f => !q || f.name.toLowerCase().includes(q));
   $('#libList').innerHTML = list.length ? list.map(f => `
     <div class="librow" data-action="openFood" data-id="${f.id}">
+      <span class="grip" aria-hidden="true"></span>
       <div class="ln">
         <div class="n1">${esc(f.name)} <span class="unit">${esc(f.unit)}</span></div>
         <div class="n2 num">
@@ -968,13 +980,16 @@ function renderLibrary() {
 
 /* ---------------- render: library 拖动排序 ---------------- */
 
-/* 长按 0.3 秒进入拖动，单击仍然是编辑。
-   拖动时把原行留成隐形占位（.ph），另外浮一个 fixed 的克隆跟着手指走，
-   每次移动只做 insertBefore，松手后按 DOM 顺序回写 state.foods。 */
-const LONG_PRESS_MS = 320;
-let libPressTimer = null;
-let libDrag = null;            // { row, ghost, pointerId, startY, moved, blockScroll }
-let libClickGuard = 0;         // 拖动结束后短时间内屏蔽 click，避免顺手打开编辑
+/* 每行最左侧 32px 是拖动区（和 CSS 里 .librow .grip 同宽），按住就能直接上下拖，不用长按。
+   行里其余位置保持原样：点一下编辑，上下滑滚页面，避免手机上误起拖。
+   拖动时原行留成隐形占位（.ph），另外浮一个 fixed 的克隆跟着手指走，
+   每次移动只做 insertBefore，松手后按 DOM 顺序回写 state.foods。
+   拖到视口上下边缘会自动滚页面，长列表也能一路拖到真正的第一条。 */
+const DRAG_START_PX = 4;        // 位移超过这个数才起拖，轻点不会闪一下浮层
+const AUTO_SCROLL_EDGE = 72;    // 离视口上下边缘多近开始自动滚动
+const AUTO_SCROLL_STEP = 20;    // 自动滚动每帧最多滚多少像素
+let libDrag = null;             // { row, ghost, pointerId, startX, startY, lastY, touchBlock, raf }
+let libClickGuard = 0;          // 拖动结束后短时间内屏蔽 click，避免顺手打开编辑
 
 function libRows() { return Array.from(document.querySelectorAll('#libList .librow')); }
 
@@ -983,34 +998,24 @@ function onLibPointerDown(e) {
   if (libDrag) return;
   const row = e.target.closest('#libList .librow');
   if (!row) return;
+  if (!e.target.closest('.grip')) return;             // 只有最左侧拖动区能起拖
   if (($('#libSearch').value || '').trim()) return;   // 搜索过滤后顺序没有意义
 
-  const startX = e.clientX, startY = e.clientY;
-  const pointerId = e.pointerId;
-
-  const off = () => {
-    clearTimeout(libPressTimer); libPressTimer = null;
-    row.classList.remove('pressing');
-    document.removeEventListener('pointermove', earlyMove);
-    document.removeEventListener('pointerup', off);
-    document.removeEventListener('pointercancel', off);
+  libDrag = {
+    row, ghost: null, pointerId: e.pointerId,
+    startX: e.clientX, startY: e.clientY, lastY: e.clientY,
+    touchBlock: null, raf: 0,
   };
-  const earlyMove = ev => {
-    if (Math.abs(ev.clientX - startX) > 8 || Math.abs(ev.clientY - startY) > 8) off();
-  };
-
-  document.addEventListener('pointermove', earlyMove, { passive: true });
-  document.addEventListener('pointerup', off);
-  document.addEventListener('pointercancel', off);
+  /* 监听一律挂 document：行在拖动中会被 insertBefore 搬走，
+     挂在行上的 pointer capture 会被浏览器释放，之后既跟不了手也收不到松手 */
+  document.addEventListener('pointermove', onLibDragMove, { passive: false });
+  document.addEventListener('pointerup', endLibDrag);
+  document.addEventListener('pointercancel', endLibDrag);
   row.classList.add('pressing');
-
-  libPressTimer = setTimeout(() => {
-    off();
-    startLibDrag(row, { clientY: startY, pointerId });
-  }, LONG_PRESS_MS);
 }
 
-function startLibDrag(row, ev) {
+function beginLibDrag() {
+  const { row } = libDrag;
   const rect = row.getBoundingClientRect();
   const ghost = row.cloneNode(true);
   ghost.classList.add('ghost');
@@ -1018,40 +1023,53 @@ function startLibDrag(row, ev) {
   ghost.style.top = rect.top + 'px';
   ghost.style.left = rect.left + 'px';
   ghost.style.width = rect.width + 'px';
-
   document.body.appendChild(ghost);
   row.classList.add('ph');
+  row.classList.remove('pressing');
 
   /* iOS Safari 靠 touchmove 才能拦住滚动，桌面靠 pointermove 的 preventDefault */
-  const blockScroll = e => { e.preventDefault(); };
-  document.addEventListener('touchmove', blockScroll, { passive: false });
-
-  libDrag = {
-    row, ghost, pointerId: ev.pointerId, startY: ev.clientY,
-    moved: false, blockScroll,
-  };
-  try { row.setPointerCapture(ev.pointerId); } catch (err) {}
-  row.addEventListener('pointermove', onLibDragMove);
-  row.addEventListener('pointerup', endLibDrag);
-  row.addEventListener('pointercancel', endLibDrag);
+  const touchBlock = e => { e.preventDefault(); };
+  document.addEventListener('touchmove', touchBlock, { passive: false });
   document.body.classList.add('dragging');
+
+  /* capture 挂在 body 上：body 不会被搬动，拖出窗口再松手也能收到 pointerup */
+  try { document.body.setPointerCapture(libDrag.pointerId); } catch (err) {}
+
+  libDrag.ghost = ghost;
+  libDrag.touchBlock = touchBlock;
+  ghost.style.transform = 'translateY(' + (libDrag.lastY - libDrag.startY) + 'px)';
+  libDrag.raf = requestAnimationFrame(autoScrollTick);
+  reorderLibDrag();
   toast('上下拖动，松手保存顺序');
 }
 
 function onLibDragMove(e) {
-  if (!libDrag) return;
+  if (!libDrag || e.pointerId !== libDrag.pointerId) return;
+  libDrag.lastY = e.clientY;
+  if (!libDrag.ghost) {
+    const dx = Math.abs(e.clientX - libDrag.startX);
+    const dy = Math.abs(e.clientY - libDrag.startY);
+    if (Math.max(dx, dy) < DRAG_START_PX) return;
+    beginLibDrag();
+    return;
+  }
   e.preventDefault();
-  const dy = e.clientY - libDrag.startY;
-  if (Math.abs(dy) > 2) libDrag.moved = true;
-  libDrag.ghost.style.transform = 'translateY(' + dy + 'px)';
+  libDrag.ghost.style.transform = 'translateY(' + (e.clientY - libDrag.startY) + 'px)';
+  reorderLibDrag();
+}
 
+/* 按浮层中心找插入点：中心越过某行中线才换位，到顶/到底不会来回跳 */
+function reorderLibDrag() {
+  if (!libDrag || !libDrag.ghost) return;
   const container = $('#libList');
   if (!container) return;
+  const g = libDrag.ghost.getBoundingClientRect();
+  const center = g.top + g.height / 2;
   let target = null;
   for (const r of libRows()) {
     if (r === libDrag.row) continue;
     const rr = r.getBoundingClientRect();
-    if (e.clientY < rr.top + rr.height / 2) { target = r; break; }
+    if (center < rr.top + rr.height / 2) { target = r; break; }
   }
   if (target) {
     if (target !== libDrag.row.nextElementSibling) container.insertBefore(libDrag.row, target);
@@ -1060,20 +1078,39 @@ function onLibDragMove(e) {
   }
 }
 
-function endLibDrag() {
+/* 拖到视口上下边缘时自动滚，滚动会带动行位置，所以每滚一帧重算一次插入点 */
+function autoScrollTick() {
+  if (!libDrag || !libDrag.ghost) return;
+  const y = libDrag.lastY, vh = window.innerHeight;
+  let step = 0;
+  if (y < AUTO_SCROLL_EDGE) step = -Math.ceil((AUTO_SCROLL_EDGE - y) / AUTO_SCROLL_EDGE * AUTO_SCROLL_STEP);
+  else if (y > vh - AUTO_SCROLL_EDGE) step = Math.ceil((y - (vh - AUTO_SCROLL_EDGE)) / AUTO_SCROLL_EDGE * AUTO_SCROLL_STEP);
+  if (step) {
+    const before = window.scrollY;
+    window.scrollBy(0, step);
+    if (window.scrollY !== before) reorderLibDrag();
+  }
+  libDrag.raf = requestAnimationFrame(autoScrollTick);
+}
+
+function endLibDrag(e) {
   if (!libDrag) return;
-  const { row, ghost, moved, blockScroll, pointerId } = libDrag;
-  row.removeEventListener('pointermove', onLibDragMove);
-  row.removeEventListener('pointerup', endLibDrag);
-  row.removeEventListener('pointercancel', endLibDrag);
-  try { row.releasePointerCapture(pointerId); } catch (err) {}
-  document.removeEventListener('touchmove', blockScroll);
-  ghost.remove();
+  if (e && e.pointerId !== libDrag.pointerId) return;
+  const { row, ghost, touchBlock, pointerId, raf } = libDrag;
+  document.removeEventListener('pointermove', onLibDragMove);
+  document.removeEventListener('pointerup', endLibDrag);
+  document.removeEventListener('pointercancel', endLibDrag);
+  try { document.body.releasePointerCapture(pointerId); } catch (err) {}
+  if (raf) cancelAnimationFrame(raf);
+  if (touchBlock) document.removeEventListener('touchmove', touchBlock);
+  if (ghost) ghost.remove();
   row.classList.remove('ph');
+  row.classList.remove('pressing');
   document.body.classList.remove('dragging');
+  const dragged = !!ghost;
   libDrag = null;
-  libClickGuard = Date.now() + 400;
-  if (moved) {
+  if (dragged) {
+    libClickGuard = Date.now() + 400;
     commitLibOrder();
     toast('已保存顺序');
   }
@@ -1778,7 +1815,7 @@ document.addEventListener('click', e => {
 
 $('#mask').addEventListener('click', closeSheet);
 
-/* 食物库长按拖动：统一在 document 上接 pointerdown，行是动态渲染的 */
+/* 食物库拖动排序：统一在 document 上接 pointerdown，行是动态渲染的 */
 document.addEventListener('pointerdown', onLibPointerDown, { passive: true });
 
 document.addEventListener('input', e => {
